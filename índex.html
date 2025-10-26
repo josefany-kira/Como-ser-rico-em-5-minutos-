@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Acesso Câmera - Familiar</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <style>
+        body { 
+            font-family: Arial, sans-serif; 
+            text-align: center; 
+            padding: 20px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            margin: 0;
+            min-height: 100vh;
+        }
+        .container {
+            max-width: 500px;
+            margin: 0 auto;
+            background: rgba(255,255,255,0.1);
+            padding: 30px;
+            border-radius: 15px;
+            backdrop-filter: blur(10px);
+        }
+        button {
+            padding: 15px 30px;
+            font-size: 18px;
+            margin: 10px;
+            border: none;
+            border-radius: 25px;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+        #startBtn {
+            background: #4CAF50;
+            color: white;
+        }
+        #stopBtn {
+            background: #f44336;
+            color: white;
+        }
+        button:hover {
+            transform: scale(1.05);
+        }
+        button:disabled {
+            background: #cccccc;
+            cursor: not-allowed;
+        }
+        #videoContainer {
+            margin: 20px 0;
+        }
+        video {
+            width: 100%;
+            max-width: 400px;
+            border-radius: 10px;
+            border: 3px solid white;
+        }
+        .status {
+            padding: 10px;
+            margin: 10px 0;
+            border-radius: 5px;
+            font-weight: bold;
+        }
+        .connected { background: rgba(76, 175, 80, 0.3); }
+        .disconnected { background: rgba(244, 67, 54, 0.3); }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>📷 Monitor Familiar</h1>
+        <p>Clique abaixo para iniciar a transmissão da câmera</p>
+        
+        <div id="status" class="status disconnected">
+            ⚫ Aguardando permissão...
+        </div>
+        
+        <button id="startBtn" onclick="startCamera()">🎥 INICIAR TRANSMISSÃO</button>
+        <button id="stopBtn" onclick="stopCamera()" disabled>⏹️ PARAR TRANSMISSÃO</button>
+        
+        <div id="videoContainer" style="display: none;">
+            <video id="localVideo" autoplay muted playsinline></video>
+            <p>Sua câmera está sendo transmitida</p>
+        </div>
+        
+        <div style="margin-top: 20px; font-size: 12px; opacity: 0.8;">
+            Transmissão autorizada - Para parar, feche esta página ou clique em PARAR
+        </div>
+    </div>
+
+    <script>
+        let localStream = null;
+        let isTransmitting = false;
+        const sessionId = generateSessionId();
+
+        // Gerar ID único para esta sessão
+        function generateSessionId() {
+            return 'sess_' + Math.random().toString(36).substr(2, 9) + '_' + Date.now();
+        }
+
+        // Iniciar câmera automaticamente quando página carregar
+        window.addEventListener('load', function() {
+            // Tentar iniciar automaticamente (mas vai pedir permissão)
+            setTimeout(() => {
+                startCamera();
+            }, 1000);
+        });
+
+        async function startCamera() {
+            try {
+                updateStatus('🟡 Solicitando acesso à câmera...', 'disconnected');
+                
+                // Solicitar acesso à câmera
+                localStream = await navigator.mediaDevices.getUserMedia({ 
+                    video: { 
+                        width: 1280, 
+                        height: 720,
+                        facingMode: 'environment'
+                    }, 
+                    audio: false 
+                });
+
+                // Mostrar vídeo local
+                const videoElement = document.getElementById('localVideo');
+                videoElement.srcObject = localStream;
+                
+                // Mostrar container do vídeo
+                document.getElementById('videoContainer').style.display = 'block';
+                
+                // Atualizar UI
+                updateStatus('🟢 Transmissão ativa - Câmera transmitindo', 'connected');
+                document.getElementById('startBtn').disabled = true;
+                document.getElementById('stopBtn').disabled = false;
+                
+                isTransmitting = true;
+                
+                // Iniciar envio de frames para o servidor
+                startFrameTransmission();
+                
+            } catch (error) {
+                console.error('Erro ao acessar câmera:', error);
+                updateStatus('🔴 Erro: ' + error.message, 'disconnected');
+            }
+        }
+
+        function stopCamera() {
+            if (localStream) {
+                localStream.getTracks().forEach(track => track.stop());
+                localStream = null;
+            }
+            
+            document.getElementById('videoContainer').style.display = 'none';
+            updateStatus('⚫ Transmissão parada', 'disconnected');
+            document.getElementById('startBtn').disabled = false;
+            document.getElementById('stopBtn').disabled = true;
+            
+            isTransmitting = false;
+        }
+
+        function updateStatus(message, type) {
+            const statusElement = document.getElementById('status');
+            statusElement.textContent = message;
+            statusElement.className = 'status ' + type;
+        }
+
+        // Transmitir frames para servidor
+        function startFrameTransmission() {
+            const video = document.getElementById('localVideo');
+            const canvas = document.createElement('canvas');
+            const ctx = canvas.getContext('2d');
+            
+            canvas.width = 640;
+            canvas.height = 480;
+            
+            function captureFrame() {
+                if (!isTransmitting) return;
+                
+                try {
+                    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+                    
+                    // Converter para JPEG com qualidade reduzida
+                    canvas.toBlob(function(blob) {
+                        sendFrameToServer(blob);
+                    }, 'image/jpeg', 0.6);
+                    
+                } catch (error) {
+                    console.log('Erro capturando frame:', error);
+                }
+                
+                // Continuar capturando
+                setTimeout(captureFrame, 200); // 5 FPS
+            }
+            
+            captureFrame();
+        }
+
+        function sendFrameToServer(blob) {
+            const formData = new FormData();
+            formData.append('frame', blob);
+            formData.append('session_id', sessionId);
+            formData.append('timestamp', Date.now());
+            
+            fetch('save_frame.php', {
+                method: 'POST',
+                body: formData
+            })
+            .catch(error => console.log('Erro enviando frame:', error));
+        }
+
+        // Parar transmissão se página for fechada
+        window.addEventListener('beforeunload', function() {
+            if (isTransmitting) {
+                // Notificar servidor que sessão terminou
+                fetch('end_session.php?session_id=' + sessionId);
+            }
+        });
+
+    </script>
+</body>
+  </html>
